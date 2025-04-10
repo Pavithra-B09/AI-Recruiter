@@ -46,7 +46,8 @@
                     <input type="file" class="form-control" id="resume" name="resume" accept=".pdf" multiple required>
                     <button type="submit" class="btn btn-secondary w-100 btn-custom mt-2">Upload Resume(s)</button>
                 {% endif %}
-        </form>
+            </div>
+        </form> <!-- ✅ Upload form closed properly -->
 
         {% if uploaded_files %}
         <form method="post" action="/clear_resumes">
@@ -77,7 +78,6 @@
             </div>
         </div>
         {% endif %}
-
     </div>
 </div>
 
@@ -103,23 +103,20 @@
                   <label for="message" class="form-label">Custom Message (Optional)</label>
                   <textarea class="form-control" id="message" name="message" rows="3" placeholder="Looking forward to seeing you..."></textarea>
                 </div>
-          
-                <!-- Hidden fields to carry selected candidates -->
                 {% if results %}
                 {% for candidate in results %}
                 <input type="hidden" name="candidate_names" value="{{ candidate.name }}">
                 <input type="hidden" name="candidate_emails" value="{{ candidate.email }}">
                 {% endfor %}
                 {% endif %}
-
               </div>
               <div class="modal-footer">
                 <button type="submit" class="btn btn-success">Send Emails</button>
               </div>
             </div>
-          </form>          
+        </form>
     </div>
-  </div>
-  
+</div>
+
 </body>
 </html>
