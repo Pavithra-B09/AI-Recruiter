@@ -18,16 +18,19 @@ app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME')
 mail = Mail(app)
 
+# Folder setup
 UPLOAD_FOLDER = 'resumes'
 SELECTED_FOLDER = 'selected_resumes'
+STATIC_FOLDER = 'static'
 ALLOWED_EXTENSIONS = {'pdf'}
+
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SELECTED_FOLDER'] = SELECTED_FOLDER
 
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-if not os.path.exists(SELECTED_FOLDER):
-    os.makedirs(SELECTED_FOLDER)
+# Ensure folders exist
+for folder in [UPLOAD_FOLDER, SELECTED_FOLDER, STATIC_FOLDER]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
 uploaded_files = []
 matched_candidates = []
@@ -118,11 +121,11 @@ def process():
 
 @app.route('/download_selected', methods=['GET'])
 def download_selected():
-    zip_path = os.path.join("static", "selected_resumes.zip")
+    zip_path = os.path.join(STATIC_FOLDER, "selected_resumes.zip")
     if os.path.exists(zip_path):
         os.remove(zip_path)
     shutil.make_archive(zip_path.replace('.zip', ''), 'zip', SELECTED_FOLDER)
-    return send_from_directory('static', 'selected_resumes.zip', as_attachment=True)
+    return send_from_directory(STATIC_FOLDER, 'selected_resumes.zip', as_attachment=True)
 
 @app.route("/send_emails", methods=["POST"])
 def send_emails():
