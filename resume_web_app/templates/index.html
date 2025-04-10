@@ -69,9 +69,8 @@
         <div class="alert alert-info mt-4">
             <h5>✅ Total Candidates Selected: {{ total_selected }}</h5>
             <div class="d-flex justify-content-center mt-3 gap-3">
-                <form method="get" action="/download_selected">
-                    <button type="submit" class="btn btn-outline-primary btn-custom">⬇️ Download Resumes</button>
-                </form>
+                <a href="/download_selected" class="btn btn-outline-primary btn-custom">⬇️ Download Resumes</a>
+
 
                 <button type="button" class="btn btn-outline-success btn-custom" data-bs-toggle="modal" data-bs-target="#emailModal">
                     ✉️ Send Interview Email
