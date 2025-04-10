@@ -1,115 +1,155 @@
+from flask import Flask, render_template, request, redirect, send_from_directory, jsonify, flash
 import os
+import shutil
+import fitz  # PyMuPDF
 import re
-import smtplib
-from tkinter import filedialog, Tk, Label, Button, Listbox, END, Entry
-from PyPDF2 import PdfReader
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from werkzeug.utils import secure_filename
+from flask_mail import Mail, Message
 
-# Gmail setup
-EMAIL_ADDRESS = "inklude2024@gmail.com"
-EMAIL_PASSWORD = "bskw whjddrbukpiv"  # Replace this with your 16-character app password
+app = Flask(__name__)
+app.secret_key = "some_secret_key"
+
+# Mail config
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME')
+mail = Mail(app)
+
+# Folder settings
+UPLOAD_FOLDER = 'resumes'
+SELECTED_FOLDER = 'selected_resumes'
+ALLOWED_EXTENSIONS = {'pdf'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['SELECTED_FOLDER'] = SELECTED_FOLDER
+
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+if not os.path.exists(SELECTED_FOLDER):
+    os.makedirs(SELECTED_FOLDER)
+
+uploaded_files = []
+matched_candidates = []
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_text_from_pdf(pdf_path):
-    reader = PdfReader(pdf_path)
     text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
+    doc = fitz.open(pdf_path)
+    for page in doc:
+        text += page.get_text()
     return text.lower()
 
 def extract_email(text):
-    email_regex = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
-    matches = re.findall(email_regex, text)
-    return matches[0] if matches else None
+    match = re.search(r"[\w\.-]+@[\w\.-]+", text)
+    return match.group(0) if match else ""
 
-def calculate_skill_match(text, required_skills):
-    found_skills = {skill for skill in required_skills if skill in text}
-    percentage = int((len(found_skills) / len(required_skills)) * 100)
-    return percentage, found_skills
+def extract_name(text):
+    match = re.search(r"(?<=name[:\s])[a-zA-Z\s]{2,50}", text, re.IGNORECASE)
+    return match.group(0).strip().title() if match else "Unknown"
 
-def send_email(to_email, found_skills, percentage, interview_date, interview_time):
-    subject = "Interview Invitation from Inklude"
-    body = f"""
-    Dear Candidate,
+@app.route('/', methods=['GET'])
+def index():
+    return render_template('index.html', uploaded_files=uploaded_files, results=None, total_selected=0, upload_message=None, entered_skills='')
 
-    Greetings from Inklude!
+@app.route('/upload', methods=['POST'])
+def upload():
+    global uploaded_files
+    uploaded_files.clear()
+    files = request.files.getlist('resume')
+    success_count = 0
+    for file in files:
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+            uploaded_files.append(filename)
+            success_count += 1
+    message = f"{success_count} file(s) uploaded successfully." if success_count else "No valid files uploaded."
+    return render_template('index.html', uploaded_files=uploaded_files, upload_message=message, upload_success=True, results=None, total_selected=0, entered_skills='')
 
-    We are pleased to inform you that, based on your resume and skill match ({percentage}%), you have been shortlisted for the next round of our recruitment process.
+@app.route('/clear_uploads', methods=['POST'])
+def clear_uploads():
+    global uploaded_files
+    for f in uploaded_files:
+        try:
+            os.remove(os.path.join(UPLOAD_FOLDER, f))
+        except:
+            continue
+    uploaded_files.clear()
+    shutil.rmtree(UPLOAD_FOLDER)
+    os.makedirs(UPLOAD_FOLDER)
+    return redirect('/')
 
-    Interview Details:
-    📅 Date: {interview_date}
-    ⏰ Time: {interview_time}
-    📍 Mode: In-person (venue details will be shared upon confirmation)
+@app.route('/process', methods=['POST'])
+def process():
+    global matched_candidates
+    matched_candidates.clear()
 
-    Please confirm your availability by replying to this email.
+    skills = request.form['skills']
+    required_skills = skills.lower().split(',')
+    required_skills = [s.strip() for s in required_skills if s.strip()]
 
-    Best regards,
-    Talent Acquisition Team
-    Inklude
-    inklude2024@gmail.com
-    """
+    if not required_skills:
+        return render_template('index.html', uploaded_files=uploaded_files, results=[], total_selected=0, upload_message="Enter valid skills.", upload_success=False, entered_skills=skills)
 
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_ADDRESS
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
+    for filename in uploaded_files:
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        text = extract_text_from_pdf(filepath)
+        matches = sum(1 for skill in required_skills if skill in text)
+        percentage = int((matches / len(required_skills)) * 100) if required_skills else 0
+        if percentage >= 80:
+            name = extract_name(text)
+            email = extract_email(text)
+            matched_candidates.append({'filename': filename, 'name': name, 'email': email, 'percentage': percentage})
 
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            server.send_message(msg)
-            return True
-    except Exception as e:
-        print("Email error:", e)
-        return False
+    shutil.rmtree(SELECTED_FOLDER)
+    os.makedirs(SELECTED_FOLDER)
+    for candidate in matched_candidates:
+        shutil.copy(os.path.join(UPLOAD_FOLDER, candidate['filename']), os.path.join(SELECTED_FOLDER, candidate['filename']))
 
-def select_folder():
-    folder = filedialog.askdirectory()
-    if not folder:
-        return
-    listbox.delete(0, END)
+    return render_template('index.html', uploaded_files=uploaded_files, results=matched_candidates, total_selected=len(matched_candidates), upload_message=None, entered_skills=skills)
 
-    # Get input from user entries
-    required_skills = set(skill_entry.get().lower().split(','))
-    interview_date = date_entry.get()
-    interview_time = time_entry.get()
+@app.route('/download_selected', methods=['GET'])
+def download_selected():
+    return jsonify({'path': SELECTED_FOLDER})
 
-    for file in os.listdir(folder):
-        if file.endswith(".pdf"):
-            path = os.path.join(folder, file)
-            text = extract_text_from_pdf(path)
-            match_percent, found_skills = calculate_skill_match(text, required_skills)
+@app.route("/send_emails", methods=["POST"])
+def send_emails():
+    interview_date = request.form['interview_date']
+    interview_time = request.form['interview_time']
+    message_body = request.form['message']
 
-            if match_percent >= 80:
-                email = extract_email(text)
-                if email:
-                    success = send_email(email, found_skills, match_percent, interview_date, interview_time)
-                    result = f"{file} - {match_percent}% - Email Sent to {email}" if success else f"{file} - {match_percent}% - Email Failed"
-                else:
-                    result = f"{file} - {match_percent}% - No Email Found"
-                listbox.insert(END, result)
+    names = request.form.getlist('candidate_names')
+    emails = request.form.getlist('candidate_emails')
 
-# GUI setup
-root = Tk()
-root.title("Resume Shortlister & Email Sender")
+    for name, email in zip(names, emails):
+        try:
+            msg = Message(
+                subject="Interview Invitation",
+                recipients=[email],
+                body=f"""Dear {name},
 
-Label(root, text="Enter Required Skills (comma-separated):").pack()
-skill_entry = Entry(root, width=60)
-skill_entry.pack(pady=5)
+Congratulations! You have been shortlisted based on your resume.
 
-Label(root, text="Interview Date (e.g. April 10, 2025):").pack()
-date_entry = Entry(root, width=40)
-date_entry.pack(pady=5)
+Interview Details:
+Date: {interview_date}
+Time: {interview_time}
 
-Label(root, text="Interview Time (e.g. 10:30 AM):").pack()
-time_entry = Entry(root, width=40)
-time_entry.pack(pady=5)
+{message_body if message_body else ''}
 
-Button(root, text="Select Resume Folder", command=select_folder).pack(pady=10)
+Best regards,
+HireScope Team"""
+            )
+            mail.send(msg)
+        except Exception as e:
+            print(f"Failed to send email to {email}: {e}")
 
-listbox = Listbox(root, width=100)
-listbox.pack(pady=20)
+    flash('Emails sent successfully!', 'success')
+    return redirect('/')
 
-root.mainloop()
+if __name__ == '__main__':
+    app.run(debug=True)
