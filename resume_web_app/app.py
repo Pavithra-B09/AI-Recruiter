@@ -1,161 +1,77 @@
-from flask import Flask, render_template, request, redirect, send_from_directory, jsonify, flash
+from flask import Flask, render_template, request, send_file
 import os
-import shutil
 import fitz  # PyMuPDF
-import re
-from werkzeug.utils import secure_filename
-from flask_mail import Mail, Message
+import shutil
+import zipfile
 
 app = Flask(__name__)
-app.secret_key = "some_secret_key"
-
-# Mail config
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-import os
-app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = 'your_email@gmail.com'
-mail = Mail(app)
-
-# Folder settings
 UPLOAD_FOLDER = 'resumes'
 SELECTED_FOLDER = 'selected_resumes'
 ALLOWED_EXTENSIONS = {'pdf'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['SELECTED_FOLDER'] = SELECTED_FOLDER
 
-# Make sure folders exist
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-if not os.path.exists(SELECTED_FOLDER):
-    os.makedirs(SELECTED_FOLDER)
+# Create folders if not exist
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(SELECTED_FOLDER, exist_ok=True)
 
-# Globals
-uploaded_files = []
-matched_candidates = []
+# Mock skill list
+required_skills = ['python', 'flask', 'html', 'css', 'sql', 'api', 'django']
 
-# --- Helper Functions ---
+# Helper to check extension
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# Extract text from PDF
 def extract_text_from_pdf(pdf_path):
     text = ""
-    doc = fitz.open(pdf_path)
-    for page in doc:
-        text += page.get_text()
+    with fitz.open(pdf_path) as doc:
+        for page in doc:
+            text += page.get_text()
     return text.lower()
 
-def extract_email(text):
-    match = re.search(r"[\w\.-]+@[\w\.-]+", text)
-    return match.group(0) if match else ""
+# Calculate match percentage
+def calculate_match(text, skills):
+    matched = [skill for skill in skills if skill in text]
+    return len(matched) / len(skills) * 100, matched
 
-def extract_name(text):
-    match = re.search(r"(?<=name[:\s])[a-zA-Z\s]{2,50}", text, re.IGNORECASE)
-    return match.group(0).strip().title() if match else "Unknown"
-
-# --- Routes ---
-@app.route('/', methods=['GET'])
+@app.route('/', methods=['GET', 'POST'])
 def index():
-    return render_template('index.html', uploaded_files=uploaded_files, results=None, total_selected=0, upload_message=None, entered_skills='')
+    results = []
+    if request.method == 'POST':
+        # Save resumes
+        files = request.files.getlist('resumes')
+        for file in files:
+            if file and allowed_file(file.filename):
+                filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+                file.save(filepath)
 
-@app.route('/upload', methods=['POST'])
-def upload():
-    global uploaded_files
-    uploaded_files.clear()
-    files = request.files.getlist('resume')
-    success_count = 0
-    for file in files:
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
-            uploaded_files.append(filename)
-            success_count += 1
-    message = f"{success_count} file(s) uploaded successfully." if success_count else "No valid files uploaded."
-    return render_template('index.html', uploaded_files=uploaded_files, upload_message=message, upload_success=True, results=None, total_selected=0, entered_skills='')
+        # Clear previously selected
+        shutil.rmtree(SELECTED_FOLDER)
+        os.makedirs(SELECTED_FOLDER, exist_ok=True)
 
-@app.route('/clear_uploads', methods=['POST'])
-def clear_uploads():
-    global uploaded_files
-    for f in uploaded_files:
-        try:
-            os.remove(os.path.join(UPLOAD_FOLDER, f))
-        except:
-            continue
-    uploaded_files.clear()
-    shutil.rmtree(UPLOAD_FOLDER)
-    os.makedirs(UPLOAD_FOLDER)
-    return redirect('/')
+        # Match logic
+        for filename in os.listdir(UPLOAD_FOLDER):
+            file_path = os.path.join(UPLOAD_FOLDER, filename)
+            text = extract_text_from_pdf(file_path)
+            match_percent, matched_skills = calculate_match(text, required_skills)
+            results.append({
+                'name': filename,
+                'match': round(match_percent, 2),
+                'skills': matched_skills
+            })
+            if match_percent >= 80:
+                shutil.copy(file_path, os.path.join(SELECTED_FOLDER, filename))
 
-@app.route('/process', methods=['POST'])
-def process():
-    global matched_candidates
-    matched_candidates.clear()
+        results.sort(key=lambda x: x['match'], reverse=True)
+    return render_template('index.html', results=results)
 
-    skills = request.form['skills']
-    required_skills = skills.lower().split(',')
-    required_skills = [s.strip() for s in required_skills if s.strip()]
-
-    if not required_skills:
-        return render_template('index.html', uploaded_files=uploaded_files, results=[], total_selected=0, upload_message="Enter valid skills.", upload_success=False, entered_skills=skills)
-
-    for filename in uploaded_files:
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        text = extract_text_from_pdf(filepath)
-        matches = sum(1 for skill in required_skills if skill in text)
-        percentage = int((matches / len(required_skills)) * 100) if required_skills else 0
-        if percentage >= 80:
-            name = extract_name(text)
-            email = extract_email(text)
-            matched_candidates.append({'filename': filename, 'name': name, 'email': email, 'percentage': percentage})
-
-    # Copy selected resumes
-    shutil.rmtree(SELECTED_FOLDER)
-    os.makedirs(SELECTED_FOLDER)
-    for candidate in matched_candidates:
-        shutil.copy(os.path.join(UPLOAD_FOLDER, candidate['filename']), os.path.join(SELECTED_FOLDER, candidate['filename']))
-
-    return render_template('index.html', uploaded_files=uploaded_files, results=matched_candidates, total_selected=len(matched_candidates), upload_message=None, entered_skills=skills)
-
-@app.route('/download_selected', methods=['GET'])
-def download_selected():
-    return jsonify({'path': SELECTED_FOLDER})
-
-@app.route("/send_emails", methods=["POST"])
-def send_emails():
-    interview_date = request.form['interview_date']
-    interview_time = request.form['interview_time']
-    message_body = request.form['message']
-
-    names = request.form.getlist('candidate_names')
-    emails = request.form.getlist('candidate_emails')
-
-    for name, email in zip(names, emails):
-        try:
-            msg = Message(
-                subject="Interview Invitation",
-                recipients=[email],
-                body=f"""Dear {name},
-
-Congratulations! You have been shortlisted based on your resume.
-
-Interview Details:
-Date: {interview_date}
-Time: {interview_time}
-
-{message_body if message_body else ''}
-
-Best regards,
-ResumeMatchr Team"""
-            )
-            mail.send(msg)
-        except Exception as e:
-            print(f"Failed to send email to {email}: {e}")
-
-    flash('Emails sent successfully!', 'success')
-    return redirect('/')
+@app.route('/download')
+def download_zip():
+    zip_path = 'selected_resumes.zip'
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        for file in os.listdir(SELECTED_FOLDER):
+            zipf.write(os.path.join(SELECTED_FOLDER, file), arcname=file)
+    return send_file(zip_path, as_attachment=True)
 
 if __name__ == '__main__':
     app.run(debug=True)

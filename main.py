@@ -1,164 +1,156 @@
-from flask import Flask, render_template, request, redirect, send_from_directory, jsonify, flash
+import venv
+from flask import Flask, render_template, request, send_from_directory, redirect, url_for, flash
 import os
 import shutil
-import fitz  # PyMuPDF
-import re
-from werkzeug.utils import secure_filename
-from flask_mail import Mail, Message
+import PyPDF2
+import docx2txt
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-app = Flask(__name__)
-app.secret_key = "some_secret_key"
-
-# Email config
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME')
-mail = Mail(app)
-
-# Folder setup
 UPLOAD_FOLDER = 'resumes'
 SELECTED_FOLDER = 'selected_resumes'
-STATIC_FOLDER = 'static'
-ALLOWED_EXTENSIONS = {'pdf'}
 
+app = Flask(__name__)
+app.secret_key = 'hirescope_secret'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['SELECTED_FOLDER'] = SELECTED_FOLDER
 
 # Ensure folders exist
-for folder in [UPLOAD_FOLDER, SELECTED_FOLDER, STATIC_FOLDER]:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-
-uploaded_files = []
-matched_candidates = []
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(SELECTED_FOLDER, exist_ok=True)
 
 def extract_text_from_pdf(pdf_path):
-    text = ""
-    doc = fitz.open(pdf_path)
-    for page in doc:
-        text += page.get_text()
-    return text.lower()
+    with open(pdf_path, 'rb') as file:
+        reader = PyPDF2.PdfReader(file)
+        text = ''
+        for page in reader.pages:
+            text += page.extract_text()
+        return text
+
+def extract_text_from_docx(docx_path):
+    return docx2txt.process(docx_path)
+
+def extract_text(file_path):
+    if file_path.endswith('.pdf'):
+        return extract_text_from_pdf(file_path)
+    elif file_path.endswith('.docx'):
+        return extract_text_from_docx(file_path)
+    elif file_path.endswith('.txt'):
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return file.read()
+    return ''
+
+def calculate_match_score(job_description, resume_text):
+    cv = CountVectorizer().fit_transform([job_description, resume_text])
+    similarity = cosine_similarity(cv[0:1], cv[1:2])
+    return round(float(similarity[0][0]) * 100, 2)
 
 def extract_email(text):
-    match = re.search(r"[\w\.-]+@[\w\.-]+", text)
-    return match.group(0) if match else ""
+    import re
+    match = re.search(r'[\w\.-]+@[\w\.-]+', text)
+    return match.group(0) if match else 'Not found'
 
 def extract_name(text):
-    match = re.search(r"(?<=name[:\s])[a-zA-Z\s]{2,50}", text, re.IGNORECASE)
-    return match.group(0).strip().title() if match else "Unknown"
+    lines = text.strip().split('\n')
+    for line in lines:
+        if len(line.split()) >= 2:
+            return line.strip()
+    return "Unknown"
 
-@app.route('/')
+def send_interview_email(to_email, name, date, time):
+    from_email = "youremail@example.com"
+    from_password = "yourpassword"
+
+    subject = "Interview Invitation from HireScope"
+    body = f"""
+    Dear {name},
+
+    Congratulations! You have been shortlisted based on your resume. 
+    We are pleased to invite you for an interview scheduled as follows:
+
+    Date: {date}
+    Time: {time}
+
+    Please confirm your availability by replying to this email.
+
+    Best regards,
+    HireScope Team
+    """
+
+    msg = MIMEMultipart()
+    msg['From'] = from_email
+    msg['To'] = to_email
+    msg['Subject'] = subject
+
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(from_email, from_password)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+        return False
+
+@app.route('/', methods=['GET', 'POST'])
 def index():
-    return render_template('index.html', uploaded_files=uploaded_files, results=None, total_selected=0, upload_message=None, entered_skills='')
+    result = []
+    selected_count = 0
+    if request.method == 'POST':
+        job_description = request.form['job_description']
+        resumes = request.files.getlist('resumes')
 
-@app.route('/upload', methods=['POST'])
-def upload():
-    global uploaded_files
-    uploaded_files.clear()
-    files = request.files.getlist('resume')
-    success_count = 0
-    for file in files:
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
-            uploaded_files.append(filename)
-            success_count += 1
-    msg = f"{success_count} file(s) uploaded successfully." if success_count else "No valid files uploaded."
-    return render_template('index.html', uploaded_files=uploaded_files, upload_message=msg, upload_success=True, results=None, total_selected=0, entered_skills='')
+        for file in resumes:
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+            file.save(file_path)
 
-@app.route('/clear_resumes', methods=['POST'])
-def clear_uploads():
-    global uploaded_files
-    for f in uploaded_files:
-        try:
-            os.remove(os.path.join(UPLOAD_FOLDER, f))
-        except:
-            continue
-    uploaded_files.clear()
-    shutil.rmtree(UPLOAD_FOLDER)
-    os.makedirs(UPLOAD_FOLDER)
-    return redirect('/')
+        for file_name in os.listdir(app.config['UPLOAD_FOLDER']):
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_name)
+            resume_text = extract_text(file_path)
+            match_score = calculate_match_score(job_description, resume_text)
+            name = extract_name(resume_text)
+            email = extract_email(resume_text)
 
-@app.route('/process', methods=['POST'])
-def process():
-    global matched_candidates
-    matched_candidates.clear()
-    skills = request.form['skills']
-    required_skills = [s.strip().lower() for s in skills.split(',') if s.strip()]
+            if match_score >= 80:
+                shutil.copy(file_path, SELECTED_FOLDER)
+                selected = True
+                selected_count += 1
+            else:
+                selected = False
 
-    if not required_skills:
-        return render_template('index.html', uploaded_files=uploaded_files, results=[], total_selected=0, upload_message="Enter valid skills.", upload_success=False, entered_skills=skills)
+            result.append({
+                'name': name,
+                'email': email,
+                'score': match_score,
+                'selected': selected,
+                'filename': file_name
+            })
 
-    for filename in uploaded_files:
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        text = extract_text_from_pdf(filepath)
-        match_count = sum(1 for skill in required_skills if skill in text)
-        match_ratio = match_count / len(required_skills)
-        percentage = int(match_ratio * 100)
+        result = sorted(result, key=lambda x: x['score'], reverse=True)
 
-        if match_ratio >= 0.75:
-            percentage = 80 + int((match_ratio - 0.75) * 20)
-            percentage = min(percentage, 100)
+    return render_template('index.html', results=result, selected_count=selected_count)
 
-        if percentage >= 80:
-            name = extract_name(text)
-            email = extract_email(text)
-            matched_candidates.append({'filename': filename, 'name': name, 'email': email, 'percentage': percentage})
+@app.route('/download/<filename>')
+def download_resume(filename):
+    return send_from_directory(SELECTED_FOLDER, filename)
 
-    shutil.rmtree(SELECTED_FOLDER)
-    os.makedirs(SELECTED_FOLDER)
-    for candidate in matched_candidates:
-        shutil.copy(os.path.join(UPLOAD_FOLDER, candidate['filename']), os.path.join(SELECTED_FOLDER, candidate['filename']))
+@app.route('/send_email', methods=['POST'])
+def send_email():
+    email = request.form['email']
+    name = request.form['name']
+    date = request.form['date']
+    time = request.form['time']
 
-    return render_template('index.html', uploaded_files=uploaded_files, results=matched_candidates, total_selected=len(matched_candidates), upload_message=None, entered_skills=skills)
+    if send_interview_email(email, name, date, time):
+        flash('Interview invitation sent successfully!', 'success')
+    else:
+        flash('Failed to send email. Check your credentials or internet connection.', 'danger')
 
-@app.route('/download_selected', methods=['GET'])
-def download_selected():
-    zip_path = os.path.join(STATIC_FOLDER, "selected_resumes.zip")
-    if os.path.exists(zip_path):
-        os.remove(zip_path)
-    shutil.make_archive(zip_path.replace('.zip', ''), 'zip', SELECTED_FOLDER)
-    return send_from_directory(STATIC_FOLDER, 'selected_resumes.zip', as_attachment=True)
-
-@app.route("/send_emails", methods=["POST"])
-def send_emails():
-    interview_date = request.form['interview_date']
-    interview_time = request.form['interview_time']
-    message_body = request.form['message']
-    names = request.form.getlist('candidate_names')
-    emails = request.form.getlist('candidate_emails')
-
-    for name, email in zip(names, emails):
-        try:
-            msg = Message(
-                subject="Interview Invitation",
-                recipients=[email],
-                body=f"""Dear {name},
-
-You have been shortlisted based on your resume.
-
-Interview Details:
-Date: {interview_date}
-Time: {interview_time}
-
-{message_body if message_body else ''}
-
-Best regards,
-ResumeMatchr Team"""
-            )
-            mail.send(msg)
-        except Exception as e:
-            print(f"Failed to send email to {email}: {e}")
-
-    flash('Emails sent successfully!', 'success')
-    return redirect('/')
+    return redirect(url_for('index'))
 
 if __name__ == '__main__':
     app.run(debug=True)

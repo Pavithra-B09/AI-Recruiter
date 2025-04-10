@@ -2,3 +2,6 @@ Flask
 flask-mail
 PyMuPDF
 gunicorn
+PyPDF2
+docx2txt
+scikit-learn
