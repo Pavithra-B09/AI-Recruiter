@@ -1,3 +1,4 @@
+import venv
 from flask import Flask, render_template, request, send_from_directory, redirect, url_for, flash
 import os
 import shutil
@@ -59,18 +60,18 @@ def extract_name(text):
     return "Unknown"
 
 def send_interview_email(to_email, name, date, time):
-    from_email = os.environ.get("MAIL_USERNAME")
-    from_password = os.environ.get("MAIL_PASSWORD")
+    from_email = "youremail@example.com"
+    from_password = "yourpassword"
 
     subject = "Interview Invitation from HireScope"
     body = f"""
     Dear {name},
 
-    Congratulations! You have been shortlisted based on your resume.
+    Congratulations! You have been shortlisted based on your resume. 
     We are pleased to invite you for an interview scheduled as follows:
 
-    📅 Date: {date}
-    ⏰ Time: {time}
+    Date: {date}
+    Time: {time}
 
     Please confirm your availability by replying to this email.
 
@@ -82,6 +83,7 @@ def send_interview_email(to_email, name, date, time):
     msg['From'] = from_email
     msg['To'] = to_email
     msg['Subject'] = subject
+
     msg.attach(MIMEText(body, 'plain'))
 
     try:
