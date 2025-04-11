@@ -1,0 +1,4 @@
+Flask==2.3.2
+PyPDF2==3.0.1
+docx2txt
+scikit-learn
